@@ -1,0 +1,550 @@
+// This is your Prisma schema file.
+// Learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// USER & AUTHENTICATION
+// ============================================================================
+
+model User {
+  id        String     @id @default(cuid())
+  email     String     @unique
+  name      String?
+  password  String
+  avatar    String?
+  role      UserRole   @default(STUDENT)
+  
+  // Relations
+  lectures  Lecture[]
+  notes     Note[]
+  studyGroups StudyGroupMember[]
+  comments  Comment[]
+  
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([email])
+}
+
+enum UserRole {
+  STUDENT
+  INSTRUCTOR
+  ADMIN
+}
+
+// ============================================================================
+// LECTURES & RECORDINGS
+// ============================================================================
+
+model Lecture {
+  id              String    @id @default(cuid())
+  title           String
+  description     String?
+  
+  // Recording metadata
+  recordingUrl    String?
+  duration        Int?      // Duration in seconds
+  language        String    @default("en")
+  
+  // Status tracking
+  status          LectureStatus @default(RECORDING)
+  
+  // Relationships
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  transcripts     Transcript[]
+  notes           Note[]
+  studyGroups     StudyGroup[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+enum LectureStatus {
+  RECORDING
+  PROCESSING
+  COMPLETED
+  ERROR
+}
+
+// ============================================================================
+// TRANSCRIPTS
+// ============================================================================
+
+model Transcript {
+  id              String    @id @default(cuid())
+  
+  // Content
+  fullText        String    @db.Text
+  language        String
+  
+  // Processing
+  processedAt     DateTime?
+  confidence      Float?    // Speech-to-text confidence score (0-1)
+  
+  // Relationships
+  lectureId       String
+  lecture         Lecture   @relation(fields: [lectureId], references: [id], onDelete: Cascade)
+  
+  segments        TranscriptSegment[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([lectureId])
+}
+
+model TranscriptSegment {
+  id              String    @id @default(cuid())
+  
+  // Content
+  text            String    @db.Text
+  speaker         String?   // Speaker name/ID
+  
+  // Timing
+  startTime       Int       // Timestamp in milliseconds
+  endTime         Int       // Timestamp in milliseconds
+  
+  // Quality
+  confidence      Float?    // Confidence score for this segment
+  
+  // Relationships
+  transcriptId    String
+  transcript      Transcript @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+  
+  notes           NoteSegment[]
+
+  @@index([transcriptId])
+  @@index([startTime, endTime])
+}
+
+// ============================================================================
+// NOTES & STUDY MATERIALS
+// ============================================================================
+
+model Note {
+  id              String    @id @default(cuid())
+  
+  // Content
+  title           String
+  content         String    @db.Text
+  format          NoteFormat @default(MARKDOWN)
+  
+  // Metadata
+  status          NoteStatus @default(DRAFT)
+  
+  // Relationships
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  lectureId       String
+  lecture         Lecture   @relation(fields: [lectureId], references: [id], onDelete: Cascade)
+  
+  segments        NoteSegment[]
+  concepts        Concept[]
+  questions       Question[]
+  flashcards      Flashcard[]
+  comments        Comment[]
+  versions        NoteVersion[]
+  
+  // Collaboration
+  sharedWith      StudyGroupMember[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([lectureId])
+  @@index([status])
+}
+
+enum NoteFormat {
+  MARKDOWN
+  HTML
+  JSON
+  PLAIN_TEXT
+}
+
+enum NoteStatus {
+  DRAFT
+  GENERATED
+  REVIEWED
+  PUBLISHED
+}
+
+model NoteSegment {
+  id              String    @id @default(cuid())
+  
+  // Reference to transcript
+  transcriptSegmentId String
+  transcriptSegment TranscriptSegment @relation(fields: [transcriptSegmentId], references: [id], onDelete: Cascade)
+  
+  // Reference to note
+  noteId          String
+  note            Note      @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  
+  // Ordering
+  order           Int
+
+  @@unique([noteId, transcriptSegmentId])
+  @@index([noteId])
+  @@index([transcriptSegmentId])
+}
+
+model NoteVersion {
+  id              String    @id @default(cuid())
+  
+  // Content
+  content         String    @db.Text
+  
+  // Version info
+  version         Int
+  changeDescription String?
+  
+  // Relationships
+  noteId          String
+  note            Note      @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime  @default(now())
+
+  @@unique([noteId, version])
+  @@index([noteId])
+}
+
+// ============================================================================
+// CONCEPTS & LEARNING MATERIALS
+// ============================================================================
+
+model Concept {
+  id              String    @id @default(cuid())
+  
+  // Content
+  name            String    @unique
+  definition      String    @db.Text
+  category        String?
+  
+  // Relationships
+  notes           Note[]
+  relatedConcepts ConceptRelation[] @relation("from")
+  relatedBy       ConceptRelation[] @relation("to")
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([category])
+}
+
+model ConceptRelation {
+  id              String    @id @default(cuid())
+  
+  fromId          String
+  from            Concept   @relation("from", fields: [fromId], references: [id], onDelete: Cascade)
+  
+  toId            String
+  to              Concept   @relation("to", fields: [toId], references: [id], onDelete: Cascade)
+  
+  relationType    String    // "related_to", "prerequisite_of", "example_of", etc.
+
+  @@unique([fromId, toId])
+  @@index([fromId])
+  @@index([toId])
+}
+
+// ============================================================================
+// QUESTIONS & FLASHCARDS
+// ============================================================================
+
+model Question {
+  id              String    @id @default(cuid())
+  
+  // Content
+  question        String    @db.Text
+  answer          String    @db.Text
+  difficulty      Difficulty @default(MEDIUM)
+  
+  // Relationships
+  noteId          String
+  note            Note      @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  
+  responses       QuestionResponse[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([noteId])
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+model QuestionResponse {
+  id              String    @id @default(cuid())
+  
+  // Content
+  answer          String    @db.Text
+  isCorrect       Boolean
+  
+  // Relationships
+  questionId      String
+  question        Question  @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  
+  userId          String
+  
+  createdAt       DateTime  @default(now())
+
+  @@index([questionId])
+  @@index([userId])
+}
+
+model Flashcard {
+  id              String    @id @default(cuid())
+  
+  // Content
+  front           String    @db.Text
+  back            String    @db.Text
+  
+  // Deck info
+  deckId          String
+  deck            FlashcardDeck @relation(fields: [deckId], references: [id], onDelete: Cascade)
+  
+  // Review tracking
+  reviews         FlashcardReview[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([deckId])
+}
+
+model FlashcardDeck {
+  id              String    @id @default(cuid())
+  
+  // Metadata
+  name            String
+  description     String?
+  
+  // Relationships
+  noteId          String?
+  note            Note?     @relation(fields: [noteId], references: [id], onDelete: SetNull)
+  
+  cards           Flashcard[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([noteId])
+}
+
+model FlashcardReview {
+  id              String    @id @default(cuid())
+  
+  // Review data
+  quality         Int       // 0-5 quality rating
+  interval        Int?      // Days until next review (Spaced Repetition)
+  nextReviewAt    DateTime?
+  
+  // Relationships
+  cardId          String
+  card            Flashcard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  
+  userId          String
+  
+  reviewedAt      DateTime  @default(now())
+
+  @@index([cardId])
+  @@index([userId])
+  @@index([nextReviewAt])
+}
+
+// ============================================================================
+// COMMENTS & COLLABORATION
+// ============================================================================
+
+model Comment {
+  id              String    @id @default(cuid())
+  
+  // Content
+  text            String    @db.Text
+  
+  // Relationships
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  noteId          String
+  note            Note      @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  
+  // Threading
+  parentId        String?
+  parent          Comment?  @relation("CommentThread", fields: [parentId], references: [id], onDelete: Cascade)
+  replies         Comment[] @relation("CommentThread")
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([noteId])
+  @@index([parentId])
+}
+
+// ============================================================================
+// STUDY GROUPS & SHARING
+// ============================================================================
+
+model StudyGroup {
+  id              String    @id @default(cuid())
+  
+  // Metadata
+  name            String
+  description     String?
+  
+  // Relationships
+  lectures        Lecture[]
+  members         StudyGroupMember[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model StudyGroupMember {
+  id              String    @id @default(cuid())
+  
+  // Relationships
+  groupId         String
+  group           StudyGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Permissions
+  role            GroupMemberRole @default(MEMBER)
+  
+  // Shared notes
+  sharedNotes     Note[]
+  
+  joinedAt        DateTime  @default(now())
+
+  @@unique([groupId, userId])
+  @@index([groupId])
+  @@index([userId])
+}
+
+enum GroupMemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+// ============================================================================
+// EXPORTS & INTEGRATIONS
+// ============================================================================
+
+model Export {
+  id              String    @id @default(cuid())
+  
+  // Export metadata
+  format          ExportFormat
+  status          ExportStatus @default(PENDING)
+  
+  // File storage
+  fileUrl         String?
+  
+  // Relationships
+  noteId          String?
+  lectureId       String?
+  
+  createdAt       DateTime  @default(now())
+  expiresAt       DateTime? // Auto-cleanup for temporary exports
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+enum ExportFormat {
+  PDF
+  MARKDOWN
+  WORD
+  HTML
+  JSON
+  OBSIDIAN
+}
+
+enum ExportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model LmsIntegration {
+  id              String    @id @default(cuid())
+  
+  // Platform
+  platform        String    // canvas, blackboard, google_classroom
+  
+  // Credentials
+  apiKey          String    @db.Text
+  apiSecret       String    @db.Text
+  
+  // Configuration
+  config          String    @db.Text // JSON config
+  
+  // Relationships
+  userId          String
+  
+  isActive        Boolean   @default(true)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+// ============================================================================
+// AUDIT & SYSTEM
+// ============================================================================
+
+model AuditLog {
+  id              String    @id @default(cuid())
+  
+  // Action
+  action          String
+  entity          String    // User, Note, Lecture, etc.
+  entityId        String
+  
+  // Details
+  changes         String    @db.Text // JSON
+  
+  userId          String?   // Who performed the action
+  
+  createdAt       DateTime  @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([entityId])
+}
+
+model SystemConfig {
+  id              String    @id @default(cuid())
+  
+  // Key-value storage
+  key             String    @unique
+  value           String    @db.Text // JSON
+  
+  updatedAt       DateTime  @updatedAt
+}
